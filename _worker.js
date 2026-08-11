@@ -48,6 +48,44 @@ export default {
 			默认反代兜底 = false;
 		};
 		const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
+		const probeCorsHeaders = {
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Methods': 'GET, OPTIONS',
+			'Access-Control-Allow-Headers': 'Content-Type',
+			'Cache-Control': 'no-store'
+		};
+		if (访问路径 === 'ip.json' || 访问路径 === 'locations') {
+			if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
+			if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: probeCorsHeaders });
+			if (访问路径 === 'ip.json') {
+				const probeClientIP = String(访问IP).split(',')[0].trim();
+				const cf = request.cf || {};
+				const probeData = {
+					ip: probeClientIP,
+					ipType: probeClientIP.includes(':') ? 'ipv6' : 'ipv4',
+					country: String(cf.country || cf.country_code || 'ZZ').toUpperCase(),
+					cnIspCode: cf.asOrganization || '',
+					colo: cf.colo || '',
+					asn: cf.asn || ''
+				};
+				return new Response(JSON.stringify(probeData), {
+					status: 200,
+					headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+				});
+			}
+			try {
+				const locationsResponse = await fetch(Pages静态页面 + '/locations');
+				const headers = new Headers(locationsResponse.headers);
+				Object.entries(probeCorsHeaders).forEach(([key, value]) => headers.set(key, value));
+				headers.set('Content-Type', 'application/json; charset=utf-8');
+				return new Response(locationsResponse.body, { status: locationsResponse.status, headers });
+			} catch (error) {
+				return new Response(JSON.stringify({ error: 'locations unavailable' }), {
+					status: 502,
+					headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+				});
+			}
+		}
 		if (缓存SOCKS5白名单 === null) {
 			if (env.GO2SOCKS5) SOCKS5白名单 = [...new Set(SOCKS5白名单.concat(await 整理成数组(env.GO2SOCKS5)))];
 			缓存SOCKS5白名单 = SOCKS5白名单;
@@ -495,10 +533,6 @@ export default {
 						}
 						return new Response(订阅内容, { status: 200, headers: responseHeaders });
 					}
-				} else if (访问路径 === 'locations') {//反代locations列表
-					const cookies = request.headers.get('Cookie') || '';
-					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-					if (authCookie && authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
 				} else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
 			} else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }) });
 		}
