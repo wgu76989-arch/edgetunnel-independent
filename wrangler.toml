@@ -2,10 +2,7 @@ name = "wgu-edgetunnel-independent"
 main = "_worker.js"
 compatibility_date = "2025-11-04"
 keep_vars = true
-
-routes = [
-  { pattern = "ee21.albb.ccwu.cc/*", zone_name = "ccwu.cc" }
-]
+workers_dev = true
 
 [[kv_namespaces]]
 binding = "KV"
