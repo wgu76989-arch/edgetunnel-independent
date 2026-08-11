@@ -1,0 +1,17 @@
+[Unit]
+Description=Edgetunnel ARM probe agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/edgetunnel-probe-agent
+EnvironmentFile=/opt/edgetunnel-probe-agent/.env
+ExecStart=/usr/bin/node /opt/edgetunnel-probe-agent/server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

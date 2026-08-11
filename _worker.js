@@ -48,13 +48,29 @@ export default {
 			默认反代兜底 = false;
 		};
 		const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
-		const probeCorsHeaders = {
-			'Access-Control-Allow-Origin': '*',
-			'Access-Control-Allow-Methods': 'GET, OPTIONS',
-			'Access-Control-Allow-Headers': 'Content-Type',
-			'Cache-Control': 'no-store'
-		};
-		if (访问路径 === 'ip.json' || 访问路径 === 'locations') {
+	const probeCorsHeaders = {
+		'Access-Control-Allow-Origin': '*',
+		'Access-Control-Allow-Methods': 'GET, OPTIONS',
+		'Access-Control-Allow-Headers': 'Content-Type',
+		'Cache-Control': 'no-store'
+	};
+	if (访问路径 === 'probe') {
+		if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
+		if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: probeCorsHeaders });
+		try {
+			const probeData = await probeCandidate(request, env, url, url.hostname);
+			return new Response(JSON.stringify(probeData), {
+				status: 200,
+				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+			});
+		} catch (error) {
+			return new Response(JSON.stringify({ error: error?.message || 'probe failed' }), {
+				status: 502,
+				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+			});
+		}
+	}
+	if (访问路径 === 'ip.json' || 访问路径 === 'locations') {
 			if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
 			if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: probeCorsHeaders });
 			if (访问路径 === 'ip.json') {
@@ -3892,6 +3908,200 @@ function isIPHostname(hostname = '') {
 	} catch (e) {
 		return false;
 	}
+}
+
+const PROBE_TLS_PORTS = new Set([443, 2053, 2083, 2087, 2096, 8443]);
+const PROBE_MAX_RESPONSE_BYTES = 128 * 1024;
+
+function isPublicProbeAddress(hostname) {
+	const host = stripIPv6Brackets(hostname).toLowerCase();
+	if (isIPv4(host)) {
+		const [first, second, third] = host.split('.').map(Number);
+		if (first === 0 || first === 10 || first === 127 || first >= 224) return false;
+		if (first === 100 && second >= 64 && second <= 127) return false;
+		if (first === 169 && second === 254) return false;
+		if (first === 172 && second >= 16 && second <= 31) return false;
+		if (first === 192 && (second === 168 || (second === 0 && third === 0))) return false;
+		if (first === 198 && second >= 18 && second <= 19) return false;
+		if (first === 198 && second === 51 && third === 100) return false;
+		if (first === 203 && second === 0 && third === 113) return false;
+		return true;
+	}
+	if (!host.includes(':') || host === '::' || host === '::1') return false;
+	return !/^(fc|fd|fe[89ab]|ff|2001:db8)/i.test(host);
+}
+
+function findBytes(haystack, needle, start = 0) {
+	outer: for (let i = start; i <= haystack.length - needle.length; i++) {
+		for (let j = 0; j < needle.length; j++) if (haystack[i + j] !== needle[j]) continue outer;
+		return i;
+	}
+	return -1;
+}
+
+function decodeChunkedProbeBody(bytes) {
+	const decoder = new TextDecoder();
+	const chunks = [];
+	let offset = 0;
+	while (offset < bytes.length) {
+		const lineEnd = findBytes(bytes, new Uint8Array([13, 10]), offset);
+		if (lineEnd === -1) throw new Error('chunked response is incomplete');
+		const sizeText = decoder.decode(bytes.slice(offset, lineEnd)).split(';', 1)[0].trim();
+		const size = Number.parseInt(sizeText, 16);
+		if (!Number.isFinite(size) || size < 0) throw new Error('invalid chunked response');
+		offset = lineEnd + 2;
+		if (size === 0) return concatBytes(...chunks);
+		if (offset + size + 2 > bytes.length) throw new Error('chunked response is incomplete');
+		chunks.push(bytes.slice(offset, offset + size));
+		offset += size;
+		if (bytes[offset] !== 13 || bytes[offset + 1] !== 10) throw new Error('invalid chunked response terminator');
+		offset += 2;
+	}
+	throw new Error('chunked response is incomplete');
+}
+
+async function readProbeHttpResponse(tlsSocket, timeoutMs) {
+	const decoder = new TextDecoder();
+	const crlfcrlf = new Uint8Array([13, 10, 13, 10]);
+	let buffer = new Uint8Array(0);
+	let headerEnd = -1;
+	let contentLength = null;
+	let chunked = false;
+
+	while (buffer.length < PROBE_MAX_RESPONSE_BYTES) {
+		const value = await withTimeout(tlsSocket.read(), timeoutMs, 'probe response timed out');
+		if (value === null) break;
+		if (!value?.length) continue;
+		buffer = concatBytes(buffer, value);
+		if (headerEnd === -1) {
+			headerEnd = findBytes(buffer, crlfcrlf);
+			if (headerEnd !== -1) {
+				const headerText = decoder.decode(buffer.slice(0, headerEnd));
+				const statusLine = headerText.split('\r\n')[0] || '';
+				const statusMatch = statusLine.match(/^HTTP\/\d\.\d\s+(\d+)/i);
+				const status = statusMatch ? Number(statusMatch[1]) : 0;
+				const headers = new Headers();
+				for (const line of headerText.split('\r\n').slice(1)) {
+					const separator = line.indexOf(':');
+					if (separator > 0) headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+				}
+				contentLength = headers.has('content-length') ? Number(headers.get('content-length')) : null;
+				chunked = (headers.get('transfer-encoding') || '').toLowerCase().includes('chunked');
+				if (!status) throw new Error('invalid probe response status');
+				if (contentLength !== null && (!Number.isFinite(contentLength) || contentLength < 0)) throw new Error('invalid probe content length');
+				if (contentLength !== null && buffer.length >= headerEnd + 4 + contentLength) return { status, headers, body: buffer.slice(headerEnd + 4, headerEnd + 4 + contentLength) };
+			}
+		}
+		if (headerEnd !== -1 && contentLength === null && chunked && decoder.decode(buffer.slice(headerEnd + 4)).includes('\r\n0\r\n')) break;
+	}
+
+	if (headerEnd === -1) throw new Error('probe response headers are invalid');
+	const headerText = decoder.decode(buffer.slice(0, headerEnd));
+	const statusMatch = headerText.match(/^HTTP\/\d\.\d\s+(\d+)/i);
+	const status = statusMatch ? Number(statusMatch[1]) : 0;
+	const headers = new Headers();
+	for (const line of headerText.split('\r\n').slice(1)) {
+		const separator = line.indexOf(':');
+		if (separator > 0) headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+	}
+	let body = buffer.slice(headerEnd + 4);
+	if (chunked) body = decodeChunkedProbeBody(body);
+	if (contentLength !== null) {
+		if (body.length < contentLength) throw new Error('probe response body is incomplete');
+		body = body.slice(0, contentLength);
+	}
+	return { status, headers, body };
+}
+
+async function probeCandidate(request, env, url, requestHost) {
+	const targetHost = stripIPv6Brackets(url.searchParams.get('ip') || '');
+	const targetPort = Number(url.searchParams.get('port') || 0);
+	if (!isIPHostname(targetHost) || !isPublicProbeAddress(targetHost)) throw new Error('invalid public IP');
+	if (!PROBE_TLS_PORTS.has(targetPort)) throw new Error('unsupported TLS port');
+
+	const serverName = String(env.PROBE_SNI || requestHost || '').trim();
+	if (!serverName || isIPHostname(serverName)) throw new Error('PROBE_SNI must be a hostname');
+	const timeoutMs = Math.min(5000, Math.max(500, Number(env.PROBE_TIMEOUT_MS) || 2500));
+	if (String(env.PROBE_RELAY_URL || '').trim()) {
+		return probeCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs);
+	}
+
+	const started = Date.now();
+	const TCP连接 = 创建请求TCP连接器(request);
+	let socket = null;
+	let tlsSocket = null;
+	try {
+		socket = TCP连接({ hostname: targetHost, port: targetPort }, { allowHalfOpen: false });
+		await withTimeout(socket.opened, timeoutMs, 'probe TCP connection timed out');
+		tlsSocket = new TlsClient(socket, { serverName, alpn: ['http/1.1'], insecure: true, timeout: timeoutMs });
+		await withTimeout(tlsSocket.handshake(), timeoutMs, 'probe TLS handshake timed out');
+		await tlsSocket.write(new TextEncoder().encode(`GET /ip.json HTTP/1.1\r\nHost: ${serverName}\r\nUser-Agent: BestCF-Worker-Probe\r\nConnection: close\r\nAccept: application/json\r\n\r\n`));
+		const response = await readProbeHttpResponse(tlsSocket, timeoutMs);
+		if (response.status < 200 || response.status >= 300) throw new Error(`target HTTP ${response.status}`);
+		let data;
+		try {
+			data = JSON.parse(new TextDecoder().decode(response.body));
+		} catch {
+			throw new Error('target response is not JSON');
+		}
+		return { ...data, probeIp: targetHost, probeLatency: Date.now() - started };
+	} finally {
+		try { tlsSocket?.close?.() } catch { }
+		try { socket?.close?.() } catch { }
+	}
+}
+
+async function probeCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs) {
+	let relayUrl;
+	try {
+		relayUrl = new URL(String(env.PROBE_RELAY_URL || '').trim());
+	} catch {
+		throw new Error('PROBE_RELAY_URL is invalid');
+	}
+	if (relayUrl.protocol !== 'https:') throw new Error('PROBE_RELAY_URL must use HTTPS');
+	if (!relayUrl.pathname || relayUrl.pathname === '/') relayUrl.pathname = '/probe';
+	relayUrl.search = '';
+	relayUrl.searchParams.set('ip', targetHost);
+	relayUrl.searchParams.set('port', String(targetPort));
+	relayUrl.searchParams.set('sni', serverName);
+	relayUrl.searchParams.set('timeout', String(timeoutMs));
+
+	const headers = {
+		'Accept': 'application/json',
+		'User-Agent': 'BestCF-Worker-Relay/1.0'
+	};
+	const relayToken = String(env.PROBE_RELAY_TOKEN || '').trim();
+	if (relayToken) headers.Authorization = `Bearer ${relayToken}`;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs + 2000);
+	let response;
+	try {
+		response = await fetch(relayUrl.toString(), {
+			method: 'GET',
+			headers,
+			redirect: 'error',
+			signal: controller.signal
+		});
+	} catch (error) {
+		throw new Error(error?.name === 'AbortError' ? 'probe relay timed out' : `probe relay unavailable: ${error?.message || 'request failed'}`);
+	} finally {
+		clearTimeout(timer);
+	}
+
+	const body = await response.text();
+	let data;
+	try {
+		data = JSON.parse(body);
+	} catch {
+		throw new Error(`probe relay returned HTTP ${response.status}`);
+	}
+	if (!response.ok) throw new Error(data?.error || `probe relay returned HTTP ${response.status}`);
+	if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('probe relay response is invalid');
+	if (stripIPv6Brackets(data.probeIp || '') !== targetHost) throw new Error('probe relay returned a mismatched IP');
+	const probeLatency = Number(data.probeLatency);
+	if (!Number.isFinite(probeLatency) || probeLatency < 0 || probeLatency > 60000) throw new Error('probe relay latency is invalid');
+	return { ...data, probeIp: targetHost, probePort: targetPort, probeLatency: Math.max(1, Math.round(probeLatency)) };
 }
 
 //////////////////////////////////////////////////turnConnect///////////////////////////////////////////////
