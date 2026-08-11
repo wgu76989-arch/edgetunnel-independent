@@ -51,7 +51,7 @@ export default {
 	const probeCorsHeaders = {
 		'Access-Control-Allow-Origin': '*',
 		'Access-Control-Allow-Methods': 'GET, OPTIONS',
-		'Access-Control-Allow-Headers': 'Content-Type',
+		'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 		'Cache-Control': 'no-store'
 	};
 	if (访问路径 === 'probe') {
@@ -69,6 +69,46 @@ export default {
 				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
 			});
 		}
+	}
+	if (访问路径 === 'speed') {
+		if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
+		if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: probeCorsHeaders });
+		try {
+			const speedData = await speedCandidate(request, env, url, url.hostname);
+			return new Response(JSON.stringify(speedData), {
+				status: 200,
+				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+			});
+		} catch (error) {
+			return new Response(JSON.stringify({ error: error?.message || 'speed test failed' }), {
+				status: 502,
+				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+			});
+		}
+	}
+	if (访问路径 === '__down') {
+		if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
+		if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: probeCorsHeaders });
+		const relayToken = String(env.PROBE_RELAY_TOKEN || '').trim();
+		const authorization = String(request.headers.get('Authorization') || '');
+		const bearer = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+		if (!relayToken || !constantTimeEqual(textEncoder.encode(bearer), textEncoder.encode(relayToken))) {
+			return new Response(JSON.stringify({ error: 'unauthorized' }), {
+				status: 401,
+				headers: { ...probeCorsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
+			});
+		}
+		const bytes = parseProbeSpeedBytes(url.searchParams.get('bytes'));
+		return new Response(createProbeDownloadStream(bytes), {
+			status: 200,
+			headers: {
+				...probeCorsHeaders,
+				'Content-Type': 'application/octet-stream',
+				'Content-Length': String(bytes),
+				'Content-Encoding': 'identity',
+				'X-Content-Type-Options': 'nosniff'
+			}
+		});
 	}
 	if (访问路径 === 'ip.json' || 访问路径 === 'locations') {
 			if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: probeCorsHeaders });
@@ -4011,6 +4051,103 @@ async function readProbeHttpResponse(tlsSocket, timeoutMs) {
 		body = body.slice(0, contentLength);
 	}
 	return { status, headers, body };
+}
+
+const PROBE_SPEED_DEFAULT_BYTES = 20_000_000;
+const PROBE_SPEED_MIN_BYTES = 64 * 1024;
+const PROBE_SPEED_MAX_BYTES = 25_000_000;
+
+function parseProbeSpeedBytes(value) {
+	const bytes = Number(value);
+	if (!Number.isFinite(bytes)) return PROBE_SPEED_DEFAULT_BYTES;
+	return Math.min(PROBE_SPEED_MAX_BYTES, Math.max(PROBE_SPEED_MIN_BYTES, Math.round(bytes)));
+}
+
+function createProbeDownloadStream(totalBytes) {
+	const chunkSize = 64 * 1024;
+	const chunk = new Uint8Array(chunkSize);
+	for (let index = 0; index < chunk.length; index++) chunk[index] = index & 255;
+	let remaining = totalBytes;
+	return new ReadableStream({
+		pull(controller) {
+			if (remaining <= 0) {
+				controller.close();
+				return;
+			}
+			const size = Math.min(chunkSize, remaining);
+			controller.enqueue(size === chunkSize ? chunk : chunk.slice(0, size));
+			remaining -= size;
+			if (remaining <= 0) controller.close();
+		}
+	});
+}
+
+async function speedCandidate(request, env, url, requestHost) {
+	const targetHost = stripIPv6Brackets(url.searchParams.get('ip') || '');
+	const targetPort = Number(url.searchParams.get('port') || 0);
+	if (!isIPHostname(targetHost) || !isPublicProbeAddress(targetHost)) throw new Error('invalid public IP');
+	if (!PROBE_TLS_PORTS.has(targetPort)) throw new Error('unsupported TLS port');
+
+	const serverName = String(env.PROBE_SNI || requestHost || '').trim();
+	if (!serverName || isIPHostname(serverName)) throw new Error('PROBE_SNI must be a hostname');
+	if (!String(env.PROBE_RELAY_URL || '').trim()) throw new Error('PROBE_RELAY_URL is required for speed tests');
+	const bytes = parseProbeSpeedBytes(url.searchParams.get('bytes'));
+	const timeoutMs = Math.min(15000, Math.max(2000, Number(env.PROBE_SPEED_TIMEOUT_MS) || 13000));
+	return speedCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs, bytes);
+}
+
+async function speedCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs, bytes) {
+	let relayUrl;
+	try {
+		relayUrl = new URL(String(env.PROBE_RELAY_URL || '').trim());
+	} catch {
+		throw new Error('PROBE_RELAY_URL is invalid');
+	}
+	if (relayUrl.protocol !== 'https:') throw new Error('PROBE_RELAY_URL must use HTTPS');
+	relayUrl.pathname = '/speed';
+	relayUrl.search = '';
+	relayUrl.searchParams.set('ip', targetHost);
+	relayUrl.searchParams.set('port', String(targetPort));
+	relayUrl.searchParams.set('sni', serverName);
+	relayUrl.searchParams.set('bytes', String(bytes));
+	relayUrl.searchParams.set('timeout', String(timeoutMs));
+
+	const headers = {
+		'Accept': 'application/json',
+		'User-Agent': 'BestCF-Worker-Speed-Relay/1.0'
+	};
+	const relayToken = String(env.PROBE_RELAY_TOKEN || '').trim();
+	if (relayToken) headers.Authorization = `Bearer ${relayToken}`;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs + 3000);
+	let response;
+	try {
+		response = await fetch(relayUrl.toString(), {
+			method: 'GET',
+			headers,
+			redirect: 'manual',
+			signal: controller.signal
+		});
+	} catch (error) {
+		throw new Error(error?.name === 'AbortError' ? 'speed relay timed out' : `speed relay unavailable: ${error?.message || 'request failed'}`);
+	} finally {
+		clearTimeout(timer);
+	}
+
+	const body = await response.text();
+	let data;
+	try {
+		data = JSON.parse(body);
+	} catch {
+		throw new Error(`speed relay returned HTTP ${response.status}`);
+	}
+	if (!response.ok) throw new Error(data?.error || `speed relay returned HTTP ${response.status}`);
+	if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('speed relay response is invalid');
+	if (stripIPv6Brackets(data.probeIp || '') !== targetHost) throw new Error('speed relay returned a mismatched IP');
+	const speedMbps = Number(data.speedMbps);
+	if (!Number.isFinite(speedMbps) || speedMbps <= 0 || speedMbps > 100000) throw new Error('speed relay returned an invalid speed');
+	return { ...data, probeIp: targetHost, probePort: targetPort, speedMbps };
 }
 
 async function probeCandidate(request, env, url, requestHost) {

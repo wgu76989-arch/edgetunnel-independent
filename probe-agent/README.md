@@ -40,8 +40,12 @@ docker run -d --name edgetunnel-probe-agent --restart unless-stopped \
 ```text
 GET /health
 GET /probe?ip=172.64.229.139&port=8443&sni=eee21.albb.ccwu.cc
+GET /speed?ip=172.64.229.139&port=8443&sni=eee21.albb.ccwu.cc&bytes=20000000
 Authorization: Bearer <PROBE_TOKEN>
 ```
 
-The probe endpoint only allows public IP addresses and the configured TLS
-ports. It rejects unauthorized requests and does not resolve hostnames.
+The probe and speed endpoints only allow public IP addresses and the
+configured TLS ports. They reject unauthorized requests and do not resolve
+hostnames. `/probe` reports TCP connection latency as `probeLatency`, while
+`/speed` downloads a bounded sample through the target Worker and returns
+`speedMbps`.
