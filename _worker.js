@@ -4080,7 +4080,7 @@ async function probeCandidateViaRelay(env, targetHost, targetPort, serverName, t
 		response = await fetch(relayUrl.toString(), {
 			method: 'GET',
 			headers,
-			redirect: 'error',
+			redirect: 'manual',
 			signal: controller.signal
 		});
 	} catch (error) {
