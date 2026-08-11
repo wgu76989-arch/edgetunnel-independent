@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/edgetunnel-probe-agent
 EnvironmentFile=/opt/edgetunnel-probe-agent/.env
-ExecStart=/usr/bin/node /opt/edgetunnel-probe-agent/server.js
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env node /opt/edgetunnel-probe-agent/server.js
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
