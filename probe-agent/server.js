@@ -254,7 +254,7 @@ function measureCandidateSpeed({ ip, port, sni, timeoutMs, bytes, token }) {
 
 function createProbeServer(options = {}) {
   const token = String(options.token || process.env.PROBE_TOKEN || '').trim();
-  const defaultSni = String(options.sni || process.env.PROBE_SNI || 'eee21.albb.ccwu.cc').trim().toLowerCase();
+  const defaultSni = String(options.sni || process.env.PROBE_SNI || '121ko.albb.ccwu.cc').trim().toLowerCase();
   const allowedPorts = parseAllowedPorts(options.allowedPorts || process.env.PROBE_ALLOWED_PORTS);
   const defaultTimeoutMs = Math.min(10000, Math.max(500, Number(options.timeoutMs || process.env.PROBE_TIMEOUT_MS) || 3000));
   const probeFn = options.probeFn || probeCandidate;

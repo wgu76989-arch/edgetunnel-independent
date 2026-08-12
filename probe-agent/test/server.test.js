@@ -24,7 +24,7 @@ test('rejects private and reserved probe addresses', () => {
 });
 
 test('validates SNI hostnames', () => {
-  assert.equal(isValidHostname('eee21.albb.ccwu.cc'), true);
+  assert.equal(isValidHostname('121ko.albb.ccwu.cc'), true);
   assert.equal(isValidHostname('172.64.229.139'), false);
   assert.equal(isValidHostname('-invalid.example'), false);
 });

@@ -6,6 +6,8 @@ workers_dev = true
 
 [vars]
 AUTO_PROXYIP_URL = "https://raw.githubusercontent.com/wgu76989-arch/edgetunnel-data/main/local-snapshots/proxyip-auto.txt"
+PROBE_SNI = "121ko.albb.ccwu.cc"
+PROBE_RELAY_URL = "https://arm-probe.albb.ccwu.cc/probe"
 
 [[kv_namespaces]]
 binding = "KV"

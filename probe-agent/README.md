@@ -8,7 +8,7 @@ returns the target response plus the measured probe latency.
 Copy `.env.example` to `.env` and set `PROBE_TOKEN` to a random value. Keep
 the same value in the Cloudflare Worker secret named `PROBE_RELAY_TOKEN`.
 
-The default SNI is `eee21.albb.ccwu.cc`. The agent connects to the candidate
+The default SNI is `121ko.albb.ccwu.cc`. The agent connects to the candidate
 IP while sending this hostname as both TLS SNI and HTTP Host.
 
 ## Native Node.js
@@ -39,8 +39,8 @@ docker run -d --name edgetunnel-probe-agent --restart unless-stopped \
 
 ```text
 GET /health
-GET /probe?ip=172.64.229.139&port=8443&sni=eee21.albb.ccwu.cc
-GET /speed?ip=172.64.229.139&port=8443&sni=eee21.albb.ccwu.cc&bytes=20000000
+GET /probe?ip=172.64.229.139&port=8443&sni=121ko.albb.ccwu.cc
+GET /speed?ip=172.64.229.139&port=8443&sni=121ko.albb.ccwu.cc&bytes=20000000
 Authorization: Bearer <PROBE_TOKEN>
 ```
 

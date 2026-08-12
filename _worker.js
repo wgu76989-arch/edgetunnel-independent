@@ -4172,9 +4172,21 @@ async function probeCandidate(request, env, url, requestHost) {
 	if (!serverName || isIPHostname(serverName)) throw new Error('PROBE_SNI must be a hostname');
 	const timeoutMs = Math.min(5000, Math.max(500, Number(env.PROBE_TIMEOUT_MS) || 2500));
 	if (String(env.PROBE_RELAY_URL || '').trim()) {
-		return probeCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs);
+		try {
+			return await probeCandidateViaRelay(env, targetHost, targetPort, serverName, timeoutMs);
+		} catch (relayError) {
+			try {
+				const directData = await probeCandidateDirect(request, targetHost, targetPort, serverName, timeoutMs);
+				return { ...directData, probeSource: 'worker-direct-fallback' };
+			} catch (directError) {
+				throw new Error(`probe relay failed: ${relayError?.message || 'request failed'}; direct probe failed: ${directError?.message || 'request failed'}`);
+			}
+		}
 	}
+	return probeCandidateDirect(request, targetHost, targetPort, serverName, timeoutMs);
+}
 
+async function probeCandidateDirect(request, targetHost, targetPort, serverName, timeoutMs) {
 	const started = Date.now();
 	const TCP连接 = 创建请求TCP连接器(request);
 	let socket = null;
