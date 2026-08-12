@@ -3,7 +3,7 @@ let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const 自有GitHub项目 = 'https://github.com/wgu76989-arch/edgetunnel-independent';
 const Pages静态页面 = 'https://wgu76989-arch.github.io/edgetunnel-pages';
-const PAGES_CACHE_VERSION = '2cfb78a';
+const PAGES_CACHE_VERSION = '12eef28';
 const 自有自动反代源 = 'https://raw.githubusercontent.com/wgu76989-arch/edgetunnel-data/main/local-snapshots/proxyip-auto.txt';
 let 自动反代源缓存 = { url: '', expiresAt: 0, values: [] };
 
