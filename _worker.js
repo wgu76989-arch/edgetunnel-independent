@@ -314,14 +314,20 @@ export default {
 					} else if (request.method === 'POST') {// 处理 KV 操作（POST 请求）
 						if (访问路径 === 'admin/config.json') { // 保存config.json配置
 							try {
-								const newConfig = await request.json();
+								const newConfig = 规范化配置JSON(await request.json());
 								// 验证配置完整性
 								if (!newConfig.UUID || !newConfig.HOST) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+								const socksConfig = newConfig.反代?.SOCKS5;
+								if (socksConfig?.启用 && !socksConfig.账号) return new Response(JSON.stringify({ error: 'SOCKS5 已启用，但代理地址为空' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 
 								// 保存到 KV
 								await env.KV.put('config.json', JSON.stringify(newConfig, null, 2));
-								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
-								return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', newConfig));
+								return new Response(JSON.stringify({
+									success: true,
+									message: '配置已保存',
+									proxy: socksConfig ? { enabled: socksConfig.启用, global: socksConfig.全局, configured: Boolean(socksConfig.账号) } : null
+								}), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
 							} catch (error) {
 								console.error('保存配置失败:', error);
 								return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -5906,6 +5912,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 		console.error(`读取config_JSON出错: ${error.message}`);
 		config_JSON = 默认配置JSON;
 	}
+	config_JSON = 规范化配置JSON(config_JSON);
 
 	if (!config_JSON.订阅转换配置.SUBLIST) config_JSON.订阅转换配置.SUBLIST = false;
 	if (!config_JSON.订阅转换配置.UDP) config_JSON.订阅转换配置.UDP = false;
@@ -6036,6 +6043,30 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 
 	config_JSON.加载时间 = (performance.now() - 初始化开始时间).toFixed(2) + 'ms';
 	return config_JSON;
+}
+
+// 管理页和历史版本可能保存过带协议前缀的账号，统一成模板需要的 host:port 账号格式。
+function 规范化配置JSON(config = {}) {
+	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+	const proxy = config.反代;
+	const socks = proxy?.SOCKS5;
+	if (!socks || typeof socks !== 'object' || Array.isArray(socks)) return config;
+	if (typeof socks.启用 === 'string') {
+		const enabled = socks.启用.trim().toLowerCase();
+		if (/^(socks5|http|https|turn|sstp):\/\//.test(enabled)) {
+			if (!socks.账号) socks.账号 = socks.启用;
+			socks.启用 = enabled.split(':', 1)[0];
+		}
+	}
+	if (typeof socks.全局 === 'string') {
+		const globalValue = socks.全局.trim();
+		if (/^(socks5|http|https|turn|sstp):\/\//i.test(globalValue) && !socks.账号) socks.账号 = globalValue;
+		if (/^(true|1)$/i.test(globalValue)) socks.全局 = true;
+		else if (/^(false|0)$/i.test(globalValue)) socks.全局 = false;
+		else if (/^(socks5|http|https|turn|sstp):\/\//i.test(globalValue)) socks.全局 = true;
+	}
+	if (typeof socks.账号 === 'string') socks.账号 = socks.账号.trim().replace(/^(socks5|http|https|turn|sstp):\/\//i, '');
+	return config;
 }
 
 function 识别运营商(request) {
