@@ -6148,8 +6148,10 @@ async function 整理成数组(内容) {
 
 async function 获取自有自动反代IP(env, 当前机房 = '') {
 	const sourceURL = String(env.AUTO_PROXYIP_URL || 自有自动反代源).trim();
+	const colo = String(当前机房 || '').trim().toUpperCase();
+	const cacheKey = `${sourceURL}|${colo}`;
 	const now = Date.now();
-	if (自动反代源缓存.url === sourceURL && now < 自动反代源缓存.expiresAt) {
+	if (自动反代源缓存.url === cacheKey && now < 自动反代源缓存.expiresAt) {
 		return 自动反代源缓存.values.join(',');
 	}
 
@@ -6183,7 +6185,6 @@ async function 获取自有自动反代IP(env, 当前机房 = '') {
 			entries.push({ colo, address });
 		}
 
-		const colo = String(当前机房 || '').trim().toUpperCase();
 		const localEntries = colo ? entries.filter(item => item.colo === colo) : [];
 		const candidates = localEntries.length > 0 ? localEntries : entries;
 		for (let i = candidates.length - 1; i > 0; i--) {
@@ -6191,12 +6192,12 @@ async function 获取自有自动反代IP(env, 当前机房 = '') {
 			[candidates[i], candidates[j]] = [candidates[j], candidates[i]];
 		}
 		const selected = candidates.slice(0, 64).map(item => item.address);
-		自动反代源缓存 = { url: sourceURL, expiresAt: now + 10 * 60 * 1000, values: selected };
+		自动反代源缓存 = { url: cacheKey, expiresAt: now + 10 * 60 * 1000, values: selected };
 		log(`[自有自动反代] 源=${sourceURL} 机房=${colo || '*'} 匹配=${localEntries.length} 使用=${selected.length}`);
 		return selected.join(',');
 	} catch (error) {
 		console.warn(`[自有自动反代] 获取失败: ${error?.message || error}`);
-		自动反代源缓存 = { url: sourceURL, expiresAt: now + 30 * 1000, values: [] };
+		自动反代源缓存 = { url: cacheKey, expiresAt: now + 30 * 1000, values: [] };
 		return '';
 	}
 }
