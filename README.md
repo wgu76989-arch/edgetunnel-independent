@@ -13,6 +13,10 @@
 - Sing-box GeoSite：<https://github.com/wgu76989-arch/edgetunnel-sing-geosite>
 - 订阅转换源码：<https://github.com/wgu76989-arch/edgetunnel-subconverter>
 
+自动 PROXYIP 源：<https://raw.githubusercontent.com/wgu76989-arch/edgetunnel-data/main/local-snapshots/proxyip-auto.txt>。
+后台勾选“启用自动获取”时，Worker 从该自有源按 Cloudflare 机房优先选择反代地址；源文件由
+`node scripts/generate-proxyip-auto.mjs` 根据自有快照生成，不再依赖上游自动反代域名。
+
 ## Cloudflare Workers 部署
 
 1. 创建一个 KV 命名空间，并在 `wrangler.toml` 中以 `KV` 为绑定名填写其 ID。

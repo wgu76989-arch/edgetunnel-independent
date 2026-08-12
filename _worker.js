@@ -3,6 +3,8 @@ let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const 自有GitHub项目 = 'https://github.com/wgu76989-arch/edgetunnel-independent';
 const Pages静态页面 = 'https://wgu76989-arch.github.io/edgetunnel-pages';
+const 自有自动反代源 = 'https://raw.githubusercontent.com/wgu76989-arch/edgetunnel-data/main/local-snapshots/proxyip-auto.txt';
+let 自动反代源缓存 = { url: '', expiresAt: 0, values: [] };
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 20 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
@@ -42,11 +44,15 @@ export default {
 		TCP并发拨号数 = Math.max(1, Number(env.TCP_CONCURRENT_DIAL) || TCP并发拨号数);
 		if (!env.TCP_CONCURRENT_DIAL && TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') TCP并发拨号数 = 1;
 		let 默认反代IP = '', 默认反代兜底 = true;
-		if (env.PROXYIP) {
-			const proxyIPs = await 整理成数组(env.PROXYIP);
+		const 环境反代 = String(env.PROXYIP || '').trim();
+		if (环境反代 && 环境反代.toLowerCase() !== 'auto') {
+			const proxyIPs = await 整理成数组(环境反代);
 			默认反代IP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
 			默认反代兜底 = false;
-		};
+		} else {
+			默认反代IP = await 获取自有自动反代IP(env, request.cf?.colo);
+			默认反代兜底 = !默认反代IP;
+		}
 		const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
 	const probeCorsHeaders = {
 		'Access-Control-Allow-Origin': '*',
@@ -6138,6 +6144,61 @@ async function 整理成数组(内容) {
 	if (替换后的内容.charAt(替换后的内容.length - 1) == ',') 替换后的内容 = 替换后的内容.slice(0, 替换后的内容.length - 1);
 	const 地址数组 = 替换后的内容.split(',');
 	return 地址数组;
+}
+
+async function 获取自有自动反代IP(env, 当前机房 = '') {
+	const sourceURL = String(env.AUTO_PROXYIP_URL || 自有自动反代源).trim();
+	const now = Date.now();
+	if (自动反代源缓存.url === sourceURL && now < 自动反代源缓存.expiresAt) {
+		return 自动反代源缓存.values.join(',');
+	}
+
+	try {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 4500);
+		let response;
+		try {
+			response = await fetch(sourceURL, {
+				signal: controller.signal,
+				headers: { 'Accept': 'text/plain', 'Cache-Control': 'no-cache' }
+			});
+		} finally {
+			clearTimeout(timeout);
+		}
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+		const entries = [];
+		const seen = new Set();
+		const addressPattern = /^(?:\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d{1,5})?$/i;
+		for (const rawLine of (await response.text()).split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (!line || line.startsWith('#')) continue;
+			const separator = line.indexOf('|');
+			const colo = separator > -1 ? line.slice(0, separator).trim().toUpperCase() : '*';
+			const address = (separator > -1 ? line.slice(separator + 1) : line).trim().split('#', 1)[0].trim();
+			if (!address || !addressPattern.test(address)) continue;
+			const key = `${colo}|${address.toLowerCase()}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			entries.push({ colo, address });
+		}
+
+		const colo = String(当前机房 || '').trim().toUpperCase();
+		const localEntries = colo ? entries.filter(item => item.colo === colo) : [];
+		const candidates = localEntries.length > 0 ? localEntries : entries;
+		for (let i = candidates.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+		}
+		const selected = candidates.slice(0, 64).map(item => item.address);
+		自动反代源缓存 = { url: sourceURL, expiresAt: now + 10 * 60 * 1000, values: selected };
+		log(`[自有自动反代] 源=${sourceURL} 机房=${colo || '*'} 匹配=${localEntries.length} 使用=${selected.length}`);
+		return selected.join(',');
+	} catch (error) {
+		console.warn(`[自有自动反代] 获取失败: ${error?.message || error}`);
+		自动反代源缓存 = { url: sourceURL, expiresAt: now + 30 * 1000, values: [] };
+		return '';
+	}
 }
 
 async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
